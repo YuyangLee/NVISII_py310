@@ -24,8 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, windows-2019]
-        python-version: ['3.6', '3.7', '3.8', '3.9']
+        os: [ubuntu-20.04]
+        python-version: ['3.10']
         optix-version: [70, 71, 72]
         include:
           # Includes the value for matrix.container when the OS is Ubuntu, to use manylinux complaint CentOS version.
@@ -33,8 +33,6 @@ jobs:
           - os: ubuntu-20.04
             container: 'quay.io/pypa/manylinux2014_x86_64:2021-01-12-c8250d8'
             pretty: 'Linux'
-          - os: windows-2019
-            pretty: 'Windows'
     
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
@@ -50,8 +48,8 @@ jobs:
         run: |
           # Install Python Dependencies
           PY=${{ matrix.python-version }}
-          [[ ${PY:2:1} < 8 ]] && M=m || M=""
-          PYVER=cp${PY:0:1}${PY:2:1}-cp${PY:0:1}${PY:2:1}${M}
+          [[ ${PY:2:2} < 8 ]] && M=m || M=""
+          PYVER=cp${PY:0:1}${PY:2:2}-cp${PY:0:1}${PY:2:2}${M}
           PYEXEC=/opt/python/${PYVER}/bin/python
           $PYEXEC -m pip install --upgrade pip
           $PYEXEC -m pip install setuptools setuptools_scm numpy==1.19.5
@@ -103,8 +101,8 @@ jobs:
           source /opt/rh/devtoolset-8/enable
           
           PY=${{ matrix.python-version }}
-          [[ ${PY:2:1} < 8 ]] && M=m || M=""
-          PYVER=cp${PY:0:1}${PY:2:1}-cp${PY:0:1}${PY:2:1}${M}
+          [[ ${PY:2:2} < 8 ]] && M=m || M=""
+          PYVER=cp${PY:0:1}${PY:2:2}-cp${PY:0:1}${PY:2:2}${M}
           PYEXEC=/opt/python/${PYVER}/bin/python
           CMAKEEXEC=/opt/python/${PYVER}/bin/cmake 
           
@@ -118,10 +116,10 @@ jobs:
           -DCUDA_CUDART_LIBRARY=/usr/local/cuda-10.2/targets/x86_64-linux/lib/libcudart.so \
           -DSWIG_DIR="./swig-4.0.2/share/swig/4.0.2/" \
           -DSWIG_EXECUTABLE="swig-4.0.2/bin/swig" \
-          -DPython_INCLUDE_DIRS=/opt/python/${PYVER}/include/python${PY:0:1}.${PY:2:1}${M}/ \
-          -DPython_NumPy_INCLUDE_DIRS=/opt/python/${PYVER}/lib/python${PY:0:1}.${PY:2:1}/site-packages/numpy/core/include/ \
+          -DPython_INCLUDE_DIRS=/opt/python/${PYVER}/include/python${PY:0:1}.${PY:2:2}${M}/ \
+          -DPython_NumPy_INCLUDE_DIRS=/opt/python/${PYVER}/lib/python${PY:0:1}.${PY:2:2}/site-packages/numpy/core/include/ \
           -DPython_VERSION_MAJOR=${PY:0:1} \
-          -DPython_VERSION_MINOR=${PY:2:2} \
+          -DPython_VERSION_MINOR=${PY:2:3} \
           -DCMAKE_BUILD_TYPE=Release \
            
           $CMAKEEXEC --build . --config Release --target install
@@ -159,142 +157,41 @@ jobs:
           rm ../../*.whl
           cp ../*.whl ../../
       
-      # Python configuration by github is only valid on their VMs (not inside the manylinux container), so only run on windows.
-      - name: Configure Python on Windows
-        if: runner.os == 'Windows'
-        uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-version }}
-      
-      - name: Windows Dependencies (CUDA)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $CUDA_VERSION_FULL = "10.2.89"
-          $CUDA_REPO_PKG_REMOTE = "http://developer.download.nvidia.com/compute/cuda/10.2/Prod/network_installers/cuda_10.2.89_win10_network.exe"
-          $CUDA_REPO_PKG_LOCAL = "cuda_10.2.89_win10_network.exe"
-          $CUDA_PACKAGES = "nvcc_10.2 cudart_10.2"
-          # Download the cuda network installer
-          Invoke-WebRequest $CUDA_REPO_PKG_REMOTE -OutFile $CUDA_REPO_PKG_LOCAL | Out-Null
-          # Invoke silent install of CUDA (via network installer)
-          Start-Process -Wait -FilePath .\"$($CUDA_REPO_PKG_LOCAL)" -ArgumentList "-s $($CUDA_PACKAGES)"
-
-      - name: Windows Build
-        if: runner.os == 'Windows'
-        env:
-          OPTIX_VERSION: ${{ matrix.optix-version }}
-        run: |
-          pip install --upgrade setuptools setuptools_scm wheel numpy==1.19.5
-          mkdir build
-          cd build
-          cmake ../ -DCMAKE_CUDA_COMPILER="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v10.2/bin/nvcc.exe" -DCUDA_TOOLKIT_ROOT_DIR="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v10.2" -DPYTHON_VERSION="${{matrix.python-version}}"
-          cmake --build . --config Release --target install 
-          cd ..
-          cd install
-          python setup.py bdist_wheel
-      
       - name: Upload Artifacts
         uses: actions/upload-artifact@v2
         with:
           name: nvisii-${{ matrix.os }}-python${{ matrix.python-version }}-optix${{ matrix.optix-version }}
           path: install/dist/*.whl
-  
-  docs:
-    needs: build
-    runs-on: ubuntu-20.04
-    # Only build/commit new docs if this is an update to master (ignore runs triggered within pull request)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    steps:
-      - uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
       
-      - uses: actions/download-artifact@v2
-        with:
-          name: nvisii-ubuntu-20.04-python3.9-optix72
+  # deploy:
+  #   needs: build
+  #   if: github.event_name == 'release' && github.event.action == 'created'
+  #   runs-on: ubuntu-20.04
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #     - uses: actions/download-artifact@v2
       
-      - name: Switch to gh-pages branch and merge in latest master
-        run: |
-          # tmate for debugging
-          #sleep 120
-          #echo hello
-          #wget https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz
-          #tar xf tmate-2.4.0-static-linux-amd64.tar.xz
-          #cd tmate-2.4.0-static-linux-amd64
-          #./tmate -F
-          #cd ..
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git checkout gh-pages
-          git merge master
+  #     - uses: actions/setup-python@v2
+  #       with:
+  #         python-version: '3.9'
       
-      - name: Setup Python 3.9
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.9'
-          architecture: 'x64'
+  #     - name: Install Dependencies (twine)
+  #       run: |
+  #         ls -R  # Show all downloaded artifacts
+  #         python -m pip install --upgrade pip
+  #         python -m pip install twine
       
-      - name: Build Docs
-        run: |
-          echo Build Docs here
-          python -m pip install sphinx sphinx_rtd_theme sphinx-git
-          python -m pip install nvisii*.whl
-          cd docs
-          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-ubuntu2004.pin
-          sudo mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
-          sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/3bf863cc.pub
-          sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/7fa2af80.pub
-          sudo add-apt-repository "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/ /"
-          sudo apt-get update
-          sudo apt-get -y install cuda
-          LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcuda.so make html
-      
-      #- name: Display structure of built files
-      #  run: |
-      #    ls -R
-        
-      # Upload to gh-pages branch
-      - name: Push html pages to gh-pages branch
-        run: |
-          rm -rf ./docs/_sources/
-          rm -rf ./docs/_static/
-          mv ./docs/build/html/* ./docs/
-          touch ./docs/.nojekyll
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add ./docs/
-          git commit -m "Update docs from master"
-          git push origin gh-pages
-      
-  deploy:
-    needs: build
-    if: github.event_name == 'release' && github.event.action == 'created'
-    runs-on: ubuntu-20.04
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/download-artifact@v2
-      
-      - uses: actions/setup-python@v2
-        with:
-          python-version: '3.9'
-      
-      - name: Install Dependencies (twine)
-        run: |
-          ls -R  # Show all downloaded artifacts
-          python -m pip install --upgrade pip
-          python -m pip install twine
-      
-      - name: Upload to test pypi
-        env:
-          TWINE_USERNAME: '__token__'
-          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
-        run: |
-          twine upload --repository-url https://test.pypi.org/legacy/ */*.whl
+  #     - name: Upload to test pypi
+  #       env:
+  #         TWINE_USERNAME: '__token__'
+  #         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
+  #       run: |
+  #         twine upload --repository-url https://test.pypi.org/legacy/ */*.whl
 
-      - name: Upload to pypi
-        if: success() && !github.event.release.prerelease
-        env:
-          TWINE_USERNAME: '__token__'
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          twine upload */*.whl
+  #     - name: Upload to pypi
+  #       if: success() && !github.event.release.prerelease
+  #       env:
+  #         TWINE_USERNAME: '__token__'
+  #         TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+  #       run: |
+  #         twine upload */*.whl
