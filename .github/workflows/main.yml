@@ -26,10 +26,9 @@ jobs:
       matrix:
         os: [ubuntu-22.04]
         python-version: ['3.10']
-        optix-version: [70, 71, 72]
+        optix-version: [72]
         include:
           # Includes the value for matrix.container when the OS is Ubuntu, to use manylinux complaint CentOS version.
-          # For Windows, matrix.container remains undefined and the build runs on the host VM instead of within a container.
           - os: ubuntu-22.04
             container: 'quay.io/pypa/manylinux2014_x86_64:latest'
             pretty: 'Linux'
@@ -37,7 +36,7 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checkout Repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         # setuptools_scm requires history, so all commits are fetched by setting 0
         with:
           fetch-depth: 0
