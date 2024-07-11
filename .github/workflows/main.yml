@@ -1,0 +1,197 @@
+# Unified workflow for building, building docs, and conditionally deploying to PyPI for NVISII
+name: CI
+
+on:
+  # Triggers the workflow on push or pull request events but only for the master branch
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  
+  # Triggers the workflow for when a new release is tagged (This will enable also deploying to PyPI)
+  release:
+    types: [ created ]
+  
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  # This workflow always begins with a build on all supported platforms, defined by the matrix
+  build:
+    name: ${{ matrix.pretty }} - Python ${{ matrix.python-version }} - OptiX ${{ matrix.optix-version }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04]
+        python-version: ['3.10']
+        optix-version: [70, 71, 72]
+        include:
+          # Includes the value for matrix.container when the OS is Ubuntu, to use manylinux complaint CentOS version.
+          # For Windows, matrix.container remains undefined and the build runs on the host VM instead of within a container.
+          - os: ubuntu-20.04
+            container: 'quay.io/pypa/manylinux2014_x86_64:2021-01-12-c8250d8'
+            pretty: 'Linux'
+    
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+        # setuptools_scm requires history, so all commits are fetched by setting 0
+        with:
+          fetch-depth: 0
+      
+      - name: Linux Dependencies (CUDA, X, Python)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Install Python Dependencies
+          PY=${{ matrix.python-version }}
+          [[ ${PY:2:2} < 8 ]] && M=m || M=""
+          PYVER=cp${PY:0:1}${PY:2:2}-cp${PY:0:1}${PY:2:2}${M}
+          PYEXEC=/opt/python/${PYVER}/bin/python
+          $PYEXEC -m pip install --upgrade pip
+          $PYEXEC -m pip install setuptools setuptools_scm numpy==1.19.5
+          
+          # Install CMake
+          $PYEXEC -m pip install cmake
+          CMAKEEXEC=/opt/python/${PYVER}/bin/cmake 
+          $CMAKEEXEC --version          
+          
+          # Install CUDA
+          yum-config-manager --add-repo http://developer.download.nvidia.com/compute/cuda/repos/rhel7/x86_64/cuda-rhel7.repo
+          yum clean all
+          yum -y erase devtoolset-9-binutils devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-gcc-gfortran 
+          yum -y install devtoolset-8-binutils devtoolset-8-gcc devtoolset-8-gcc-c++
+          yum -y install cuda-compiler-10-2 cuda-cudart-dev-10-2 cuda-minimal-build-10-2 
+          yum -y install libXi-devel
+          yum -y install xorg-x11-server-devel
+          yum -y install libXinerama-devel
+          yum -y install glfw-devel
+          yum -y install wget
+          yum -y install pcre-devel
+          yum -y install unar  
+          yum -y install zip      
+          
+          # This symlink comes as a part of the cuda-10.2 package, which is being specifically avoided,
+          # but this symlink makes CMake's FindCUDA behave nicely.
+          ln -s /usr/local/cuda-10.2 /usr/local/cuda
+          
+          source /opt/rh/devtoolset-8/enable
+          
+          # Build a version of SWIG we can use
+          mkdir build
+          cd build
+          wget http://prdownloads.sourceforge.net/swig/swig-4.0.2.tar.gz
+          tar xzf swig-4.0.2.tar.gz
+          cd swig-4.0.2
+          ./configure --prefix $(pwd)
+          make
+          make install
+          ls
+          cd ../
+      
+      - name: Linux Build
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          OPTIX_VERSION: ${{ matrix.optix-version }}
+        run: |
+          source /opt/rh/devtoolset-8/enable
+          
+          PY=${{ matrix.python-version }}
+          [[ ${PY:2:2} < 8 ]] && M=m || M=""
+          PYVER=cp${PY:0:1}${PY:2:2}-cp${PY:0:1}${PY:2:2}${M}
+          PYEXEC=/opt/python/${PYVER}/bin/python
+          CMAKEEXEC=/opt/python/${PYVER}/bin/cmake 
+          
+          cd build 
+          
+          $CMAKEEXEC ../ \
+          -DCMAKE_CUDA_COMPILER=/usr/local/cuda-10.2/bin/nvcc \
+          -DCUDA_CUDA_LIBRARY=/usr/local/cuda-10.2/targets/x86_64-linux/lib/stubs/libcuda.so \
+          -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda-10.2/bin/nvcc \
+          -DCUDA_INCLUDE_DIRS=/usr/local/cuda-10.2/targets/x86_64-linux/include \
+          -DCUDA_CUDART_LIBRARY=/usr/local/cuda-10.2/targets/x86_64-linux/lib/libcudart.so \
+          -DSWIG_DIR="./swig-4.0.2/share/swig/4.0.2/" \
+          -DSWIG_EXECUTABLE="swig-4.0.2/bin/swig" \
+          -DPython_INCLUDE_DIRS=/opt/python/${PYVER}/include/python${PY:0:1}.${PY:2:2}${M}/ \
+          -DPython_NumPy_INCLUDE_DIRS=/opt/python/${PYVER}/lib/python${PY:0:1}.${PY:2:2}/site-packages/numpy/core/include/ \
+          -DPython_VERSION_MAJOR=${PY:0:1} \
+          -DPython_VERSION_MINOR=${PY:2:3} \
+          -DCMAKE_BUILD_TYPE=Release \
+           
+          $CMAKEEXEC --build . --config Release --target install
+          cd ..
+          cd install
+          
+          # need to temporarily remove libcuda.so.1 from library
+          cd nvisii
+          patchelf --remove-needed libcuda.so.1 _nvisii.so
+          cd ../
+          
+          # now make the bdistwheel
+          $PYEXEC setup.py bdist_wheel
+          cd dist
+          
+          # audit the bdistwheel for use on all linux distros
+          # and use the same dir for both .py and .so files
+          auditwheel repair -L "" *.whl  
+          
+          # add back on the libcuda.so.1 to the library
+          cd wheelhouse
+          unar -d *.whl
+          cd nvisii*
+          cd nvisii
+          patchelf --add-needed libcuda.so.1 _nvisii.so
+          # list libraries for manual verification
+          ldd _nvisii.so
+          cd ..
+          cd ..
+          rm *.whl
+          NAME=$(ls -1 .)
+          cd ${NAME}
+          zip -r ../${NAME}.whl ./*
+          # move the modified manylinux wheel to the "install/dist" folder to be uploaded
+          rm ../../*.whl
+          cp ../*.whl ../../
+      
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: nvisii-${{ matrix.os }}-python${{ matrix.python-version }}-optix${{ matrix.optix-version }}
+          path: install/dist/*.whl
+      
+  # deploy:
+  #   needs: build
+  #   if: github.event_name == 'release' && github.event.action == 'created'
+  #   runs-on: ubuntu-20.04
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #     - uses: actions/download-artifact@v2
+      
+  #     - uses: actions/setup-python@v2
+  #       with:
+  #         python-version: '3.9'
+      
+  #     - name: Install Dependencies (twine)
+  #       run: |
+  #         ls -R  # Show all downloaded artifacts
+  #         python -m pip install --upgrade pip
+  #         python -m pip install twine
+      
+  #     - name: Upload to test pypi
+  #       env:
+  #         TWINE_USERNAME: '__token__'
+  #         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
+  #       run: |
+  #         twine upload --repository-url https://test.pypi.org/legacy/ */*.whl
+
+  #     - name: Upload to pypi
+  #       if: success() && !github.event.release.prerelease
+  #       env:
+  #         TWINE_USERNAME: '__token__'
+  #         TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+  #       run: |
+  #         twine upload */*.whl
